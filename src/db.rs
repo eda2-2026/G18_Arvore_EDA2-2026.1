@@ -38,7 +38,11 @@ impl Database {
     }
 
     /// Retorna todos os pares com chave em [low, high], um por linha, em ordem crescente.
-    /// Complexidade com RBTree: O(log n + k). Com BTreeMap: O(log n + k) também.
+    ///
+    /// Complexidade: O(log n + k), onde k = número de resultados.
+    /// Quando RBTree estiver pronta (issue #9), substitua o corpo por:
+    ///   self.store.range(low, high).map(...).collect()
+    /// usando o iterador in-order com poda de subárvores.
     pub fn range(&self, low: &str, high: &str) -> String {
         if low > high {
             return "(empty)".to_string();
@@ -171,6 +175,22 @@ mod tests {
     #[test]
     fn range_inverted_bounds_returns_empty() {
         assert_eq!(populated().range("z", "a"), "(empty)");
+    }
+
+    #[test]
+    fn range_exact_match_existing_key_returns_one_result() {
+        // RANGE z z — chave existe: deve retornar exatamente 1 par.
+        let db = populated();
+        let result = db.range("ana", "ana");
+        let lines: Vec<&str> = result.lines().collect();
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("ana"));
+    }
+
+    #[test]
+    fn range_exact_match_missing_key_returns_empty() {
+        // RANGE z z — chave não existe: deve retornar "(empty)".
+        assert_eq!(populated().range("z", "z"), "(empty)");
     }
 
     #[test]
