@@ -87,20 +87,36 @@ impl Database {
         }
     }
 
-    /// Retorna um iterador sobre todos os pares — usado pela camada de persistência (issue #12).
-    #[allow(dead_code)]
+    /// Retorna um iterador sobre todos os pares em ordem crescente de chave.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &String)> {
         self.store.iter()
     }
 
-    /// Implementado na issue #12 (persistence).
+    /// Persiste todos os pares em data/dump.rdb como script de comandos SET.
     pub fn save(&self) -> String {
-        "(not implemented)".to_string()
+        let pairs: Vec<(String, String)> = self
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        crate::persistence::save(&pairs)
     }
 
-    /// Implementado na issue #12 (persistence).
+    /// Carrega pares de data/dump.rdb e os insere no banco.
+    /// Retorna erro descritivo se o arquivo existe mas é ilegível.
     pub fn load(&mut self) -> String {
-        "(not implemented)".to_string()
+        match crate::persistence::load() {
+            Ok(pairs) if pairs.is_empty() => {
+                format!("ERR: no dump file found at {}", crate::persistence::DUMP_PATH)
+            }
+            Ok(pairs) => {
+                let count = pairs.len();
+                for (k, v) in pairs {
+                    self.set(k, v);
+                }
+                format!("Loaded {count} keys from {}", crate::persistence::DUMP_PATH)
+            }
+            Err(e) => e,
+        }
     }
 }
 

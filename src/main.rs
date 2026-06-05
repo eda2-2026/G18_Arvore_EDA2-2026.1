@@ -90,6 +90,21 @@ fn execute(db: &mut Database, cmd: Command) -> String {
 fn main() {
     let mut db = Database::new();
 
+    // Restaura automaticamente do último SAVE — silencioso se não houver arquivo.
+    if std::path::Path::new(persistence::DUMP_PATH).exists() {
+        match persistence::load() {
+            Ok(pairs) if !pairs.is_empty() => {
+                let count = pairs.len();
+                for (k, v) in pairs {
+                    db.set(k, v);
+                }
+                println!("Restored {count} keys from {}", persistence::DUMP_PATH);
+            }
+            Err(e) => eprintln!("Warning on startup: {e}"),
+            _ => {}
+        }
+    }
+
     loop {
         print!("rbtree-db> ");
         io::stdout().flush().expect("failed to flush stdout");
