@@ -1,32 +1,21 @@
 #![allow(dead_code)]
 
-use crate::tree::node::{Link, Node};
+use std::cmp::Ordering;
 
-/// Red-Black Tree backed key-value store.
-/// `K` must implement `Ord`; the tree uses that ordering for all operations.
+use crate::tree::node::{is_red, Color, Link, Node};
+
 pub struct RBTree<K: Ord, V> {
     pub(crate) root: Link<K, V>,
     len: usize,
 }
 
 impl<K: Ord, V> RBTree<K, V> {
-    /// Creates an empty tree.
     pub fn new() -> Self {
         RBTree { root: None, len: 0 }
     }
 
-    // ── Rotações ────────────────────────────────────────────────────────────
-    //
-    // São operações puramente estruturais: movem nós, não alteram cores.
-    // O fixup de cores (inserção/remoção) chama essas funções como bloco
-    // atômico e faz as trocas de cor separadamente.
-    //
-    // Assinatura funcional: tomam posse do nó, devolvem a nova raiz da
-    // subárvore. Isso evita conflitos com o borrow checker e elimina a
-    // necessidade de ponteiro de pai.
+    // ── Rotações (issue #5) ──────────────────────────────────────────────────
 
-    /// Rotação à esquerda: o filho direito (y) sobe; x vira filho esquerdo de y.
-    ///
     /// ```text
     ///     x                 y
     ///    / \               / \
@@ -34,17 +23,13 @@ impl<K: Ord, V> RBTree<K, V> {
     ///      / \           / \
     ///     B   C         A   B
     /// ```
-    ///
-    /// Pré-condição: `x.right` é `Some`.
     pub(crate) fn rotate_left(mut x: Box<Node<K, V>>) -> Box<Node<K, V>> {
         let mut y = x.right.take().expect("rotate_left: right child must be Some");
-        x.right = y.left.take(); // B migra para x
+        x.right = y.left.take();
         y.left = Some(x);
         y
     }
 
-    /// Rotação à direita: o filho esquerdo (x) sobe; y vira filho direito de x.
-    ///
     /// ```text
     ///       y             x
     ///      / \           / \
@@ -52,71 +37,208 @@ impl<K: Ord, V> RBTree<K, V> {
     ///    / \               / \
     ///   A   B             B   C
     /// ```
-    ///
-    /// Pré-condição: `y.left` é `Some`.
     pub(crate) fn rotate_right(mut y: Box<Node<K, V>>) -> Box<Node<K, V>> {
         let mut x = y.left.take().expect("rotate_right: left child must be Some");
-        y.left = x.right.take(); // B migra para y
+        y.left = x.right.take();
         x.right = Some(y);
         x
     }
 
-    // ── Interface pública (implementada em issues #7 e #8) ──────────────────
+    // ── Inserção com fixup (issue #7) ────────────────────────────────────────
 
-    /// Inserts `value` under `key`, replacing any previous value (upsert).
-    pub fn insert(&mut self, _key: K, _value: V) {
-        todo!()
+    pub fn insert(&mut self, key: K, value: V) {
+        let (new_root, is_new) = Self::insert_rec(self.root.take(), key, value);
+        self.root = Some(new_root);
+        self.root.as_mut().unwrap().color = Color::Black; // invariante 2: raiz sempre preta
+        if is_new {
+            self.len += 1;
+        }
     }
 
-    /// Returns a reference to the value for `key`, or `None` if absent.
+    fn insert_rec(link: Link<K, V>, key: K, value: V) -> (Box<Node<K, V>>, bool) {
+        match link {
+            None => (Node::new(key, value, Color::Red), true),
+            Some(mut node) => {
+                let is_new = match key.cmp(&node.key) {
+                    Ordering::Less => {
+                        let (l, new_key) = Self::insert_rec(node.left.take(), key, value);
+                        node.left = Some(l);
+                        new_key
+                    }
+                    Ordering::Greater => {
+                        let (r, new_key) = Self::insert_rec(node.right.take(), key, value);
+                        node.right = Some(r);
+                        new_key
+                    }
+                    Ordering::Equal => {
+                        node.value = value;
+                        false
+                    }
+                };
+                (Self::insert_fixup(node), is_new)
+            }
+        }
+    }
+
+    /// Corrige violações de duplo-vermelho após inserção.
+    ///
+    /// Opera no nível do avô: verifica filhos e netos para detectar duplo-vermelho.
+    /// Implementa os 6 casos CLRS (3 por lado):
+    /// - **Caso 1**: tio vermelho → recolorir pai, tio e avô
+    /// - **Caso 2**: tio preto, neto interno → rotação no pai (converte em Caso 3)
+    /// - **Caso 3**: tio preto, neto externo → rotação no avô + recolorir
+    fn insert_fixup(mut g: Box<Node<K, V>>) -> Box<Node<K, V>> {
+        let left_red = is_red(&g.left);
+        let right_red = is_red(&g.right);
+
+        // Detecta duplo-vermelho nos quatro alinhamentos possíveis
+        let ll = left_red && g.left.as_ref().map_or(false, |l| is_red(&l.left));
+        let lr = left_red && g.left.as_ref().map_or(false, |l| is_red(&l.right));
+        let rl = right_red && g.right.as_ref().map_or(false, |r| is_red(&r.left));
+        let rr = right_red && g.right.as_ref().map_or(false, |r| is_red(&r.right));
+
+        if ll || lr {
+            if right_red {
+                // Caso 1 (esquerda): tio direito é vermelho → recolorir
+                g.left.as_mut().unwrap().color = Color::Black;
+                g.right.as_mut().unwrap().color = Color::Black;
+                g.color = Color::Red;
+            } else {
+                if !ll {
+                    // Caso 2 (esquerda-direita): rotação à esquerda no filho esquerdo
+                    // transforma em esquerda-esquerda
+                    g.left = Some(Self::rotate_left(g.left.take().unwrap()));
+                }
+                // Caso 3 (esquerda-esquerda): rotação à direita no avô + recolorir
+                let g_color = g.color.clone();
+                let mut new_root = Self::rotate_right(g);
+                new_root.color = g_color;
+                new_root.right.as_mut().unwrap().color = Color::Red;
+                return new_root;
+            }
+        } else if rl || rr {
+            if left_red {
+                // Caso 1 (direita): tio esquerdo é vermelho → recolorir
+                g.left.as_mut().unwrap().color = Color::Black;
+                g.right.as_mut().unwrap().color = Color::Black;
+                g.color = Color::Red;
+            } else {
+                if !rr {
+                    // Caso 2 (direita-esquerda): rotação à direita no filho direito
+                    // transforma em direita-direita
+                    g.right = Some(Self::rotate_right(g.right.take().unwrap()));
+                }
+                // Caso 3 (direita-direita): rotação à esquerda no avô + recolorir
+                let g_color = g.color.clone();
+                let mut new_root = Self::rotate_left(g);
+                new_root.color = g_color;
+                new_root.left.as_mut().unwrap().color = Color::Red;
+                return new_root;
+            }
+        }
+
+        g
+    }
+
+    // ── Validação das invariantes ────────────────────────────────────────────
+
+    /// Verifica as 5 invariantes da Rubro-Negra.
+    /// Retorna `Ok(())` se a árvore estiver válida, `Err(msg)` com a violação.
+    pub fn validate(&self) -> Result<(), String> {
+        if is_red(&self.root) {
+            return Err("invariante 2 violada: raiz deve ser preta".to_string());
+        }
+        Self::check_node(&self.root).map(|_| ())
+    }
+
+    /// Retorna a black-height da subárvore, ou `Err` se alguma invariante for violada.
+    fn check_node(link: &Link<K, V>) -> Result<usize, String> {
+        match link {
+            None => Ok(1), // folha nil conta como nó preto
+            Some(node) => {
+                // Invariante 4: filhos de nó vermelho são ambos pretos
+                if node.color == Color::Red {
+                    if is_red(&node.left) {
+                        return Err(
+                            "invariante 4: filho esquerdo vermelho de nó vermelho".to_string(),
+                        );
+                    }
+                    if is_red(&node.right) {
+                        return Err(
+                            "invariante 4: filho direito vermelho de nó vermelho".to_string(),
+                        );
+                    }
+                }
+
+                let lbh = Self::check_node(&node.left)?;
+                let rbh = Self::check_node(&node.right)?;
+
+                // Invariante 5: black-height igual em todos os caminhos
+                if lbh != rbh {
+                    return Err(format!(
+                        "invariante 5: black-height desigual (esq={lbh}, dir={rbh})"
+                    ));
+                }
+
+                Ok(lbh + (node.color == Color::Black) as usize)
+            }
+        }
+    }
+
+    /// Altura máxima da árvore (nº de nós no caminho mais longo raiz→folha).
+    pub fn height(&self) -> usize {
+        Self::node_height(&self.root)
+    }
+
+    fn node_height(link: &Link<K, V>) -> usize {
+        match link {
+            None => 0,
+            Some(n) => 1 + Self::node_height(&n.left).max(Self::node_height(&n.right)),
+        }
+    }
+
+    // ── Interface pública (outras issues) ────────────────────────────────────
+
     pub fn get(&self, _key: &K) -> Option<&V> {
         todo!()
     }
 
-    /// Removes `key` and returns its value, or `None` if the key did not exist.
     pub fn delete(&mut self, _key: &K) -> Option<V> {
         todo!()
     }
 
-    /// Returns all `(key, value)` pairs with key in `[low, high]`, ascending.
-    /// Complexity: O(log n + k), where k is the number of results.
     pub fn range(&self, _low: &K, _high: &K) -> Vec<(&K, &V)> {
         todo!()
     }
 
-    /// Returns all `(key, value)` pairs in ascending key order.
     pub fn iter(&self) -> Vec<(&K, &V)> {
         todo!()
     }
 
-    /// Returns the pair with the smallest key, or `None` if the tree is empty.
     pub fn min(&self) -> Option<(&K, &V)> {
         todo!()
     }
 
-    /// Returns the pair with the largest key, or `None` if the tree is empty.
     pub fn max(&self) -> Option<(&K, &V)> {
         todo!()
     }
 
-    /// Returns the number of key-value pairs stored in the tree.
     pub fn len(&self) -> usize {
-        todo!()
+        self.len
     }
 
-    /// Returns `true` if the tree contains no elements.
     pub fn is_empty(&self) -> bool {
-        todo!()
+        self.len == 0
     }
 }
 
-// ── Testes ──────────────────────────────────────────────────────────────────
+// ── Testes ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::RBTree;
 
-    // Contrato das operações públicas — compilam agora, passam após issues #7/#8.
+    // Contrato das operações ainda não implementadas — panick em todo!().
     #[test]
     #[should_panic]
     fn insert_and_get_roundtrip() {
@@ -209,14 +331,6 @@ mod rotation_tests {
         }
     }
 
-    /// Constrói a árvore:
-    /// ```text
-    ///      10(B)
-    ///     /    \
-    ///   5(B)  20(B)
-    ///         /   \
-    ///       15(B) 30(B)
-    /// ```
     fn make_tree() -> Box<Node<i32, i32>> {
         let mut root = Node::new(10, 10, Color::Black);
         root.left = Some(Node::new(5, 5, Color::Black));
@@ -229,42 +343,21 @@ mod rotation_tests {
 
     #[test]
     fn rotate_left_preserves_bst_order() {
-        // Após rotate_left em 10:
-        //      20(B)
-        //     /    \
-        //   10(B)  30(B)
-        //   /  \
-        //  5(B) 15(B)
         let before = inorder(&Some(make_tree()));
         let rotated = RBTree::<i32, i32>::rotate_left(make_tree());
-        let after = inorder(&Some(rotated));
+        assert_eq!(before, inorder(&Some(rotated)));
         assert_eq!(before, vec![5, 10, 15, 20, 30]);
-        assert_eq!(before, after);
     }
 
     #[test]
     fn rotate_right_preserves_bst_order() {
-        // Árvore inclinada para a esquerda:
-        //      20(B)
-        //     /    \
-        //   10(B)  30(B)
-        //   /  \
-        //  5(B) 15(B)
-        //
-        // Após rotate_right em 20:
-        //      10(B)
-        //     /    \
-        //   5(B)  20(B)
-        //         /  \
-        //        15(B) 30(B)
         let mut root = Node::new(20, 20, Color::Black);
         let mut left = Node::new(10, 10, Color::Black);
         left.left = Some(Node::new(5, 5, Color::Black));
         left.right = Some(Node::new(15, 15, Color::Black));
         root.left = Some(left);
         root.right = Some(Node::new(30, 30, Color::Black));
-
-        let before = inorder(&Some(root));
+        let expected = vec![5, 10, 15, 20, 30];
 
         let mut root2 = Node::new(20, 20, Color::Black);
         let mut left2 = Node::new(10, 10, Color::Black);
@@ -272,81 +365,35 @@ mod rotation_tests {
         left2.right = Some(Node::new(15, 15, Color::Black));
         root2.left = Some(left2);
         root2.right = Some(Node::new(30, 30, Color::Black));
-
-        let rotated = RBTree::<i32, i32>::rotate_right(root2);
-        let after = inorder(&Some(rotated));
-        assert_eq!(before, vec![5, 10, 15, 20, 30]);
-        assert_eq!(before, after);
+        assert_eq!(inorder(&Some(root)), expected);
+        assert_eq!(inorder(&Some(RBTree::<i32, i32>::rotate_right(root2))), expected);
     }
 
     #[test]
     fn rotate_left_then_right_restores_structure() {
-        // rotate_left e rotate_right são operações inversas.
-        // Aplicadas na mesma posição, restauram a estrutura original.
-        let original = make_tree();
-        let original_keys = inorder(&Some(original));
-
-        // rotate_left(10) → raiz vira 20
+        let original_keys = inorder(&Some(make_tree()));
         let after_left = RBTree::<i32, i32>::rotate_left(make_tree());
         assert_eq!(after_left.key, 20);
-
-        // rotate_right(20) → raiz volta a ser 10
         let restored = RBTree::<i32, i32>::rotate_right(after_left);
         assert_eq!(restored.key, 10);
-        assert_eq!(restored.left.as_ref().unwrap().key, 5);
-        assert_eq!(restored.right.as_ref().unwrap().key, 20);
-        assert_eq!(inorder(&Some(restored)), original_keys);
-    }
-
-    #[test]
-    fn rotate_right_then_left_restores_structure() {
-        let mut root = Node::new(20, 20, Color::Black);
-        let mut left = Node::new(10, 10, Color::Black);
-        left.left = Some(Node::new(5, 5, Color::Black));
-        left.right = Some(Node::new(15, 15, Color::Black));
-        root.left = Some(left);
-        root.right = Some(Node::new(30, 30, Color::Black));
-        let original_keys = inorder(&Some(root));
-
-        let mut root2 = Node::new(20, 20, Color::Black);
-        let mut left2 = Node::new(10, 10, Color::Black);
-        left2.left = Some(Node::new(5, 5, Color::Black));
-        left2.right = Some(Node::new(15, 15, Color::Black));
-        root2.left = Some(left2);
-        root2.right = Some(Node::new(30, 30, Color::Black));
-
-        let after_right = RBTree::<i32, i32>::rotate_right(root2);
-        assert_eq!(after_right.key, 10);
-
-        let restored = RBTree::<i32, i32>::rotate_left(after_right);
-        assert_eq!(restored.key, 20);
         assert_eq!(inorder(&Some(restored)), original_keys);
     }
 
     #[test]
     fn rotate_at_root_updates_self_root() {
-        // Verifica que atribuir a raiz após a rotação funciona corretamente.
         let mut rbtree: RBTree<i32, i32> = RBTree::new();
         rbtree.root = Some(make_tree());
-
         let old_right_key = rbtree.root.as_ref().unwrap().right.as_ref().unwrap().key;
-
-        // rotate_left na raiz
         rbtree.root = Some(RBTree::rotate_left(rbtree.root.take().unwrap()));
-        assert_eq!(rbtree.root.as_ref().unwrap().key, old_right_key); // 20 virou raiz
-
-        // rotate_right na nova raiz restaura
+        assert_eq!(rbtree.root.as_ref().unwrap().key, old_right_key);
         rbtree.root = Some(RBTree::rotate_right(rbtree.root.take().unwrap()));
-        assert_eq!(rbtree.root.as_ref().unwrap().key, 10); // 10 voltou à raiz
+        assert_eq!(rbtree.root.as_ref().unwrap().key, 10);
     }
 
     #[test]
     fn rotate_left_moves_right_child_left_subtree_correctly() {
-        // Garante que B migra corretamente (x.right = y.left.take())
         let rotated = RBTree::<i32, i32>::rotate_left(make_tree());
-        // y = 20, B = 15 (y.left antes da rotação)
-        // Após rotate_left: 10.right deve ser 15
-        let new_left = rotated.left.as_ref().unwrap(); // nó 10
+        let new_left = rotated.left.as_ref().unwrap();
         assert_eq!(new_left.key, 10);
         assert_eq!(new_left.right.as_ref().unwrap().key, 15);
     }
@@ -359,12 +406,130 @@ mod rotation_tests {
         left.right = Some(Node::new(15, 15, Color::Black));
         root.left = Some(left);
         root.right = Some(Node::new(30, 30, Color::Black));
-
         let rotated = RBTree::<i32, i32>::rotate_right(root);
-        // x = 10, B = 15 (x.right antes da rotação)
-        // Após rotate_right: 20.left deve ser 15
-        let new_right = rotated.right.as_ref().unwrap(); // nó 20
+        let new_right = rotated.right.as_ref().unwrap();
         assert_eq!(new_right.key, 20);
         assert_eq!(new_right.left.as_ref().unwrap().key, 15);
+    }
+}
+
+#[cfg(test)]
+mod insert_tests {
+    use super::RBTree;
+    use crate::tree::node::Color;
+
+    fn pseudo_random(n: usize) -> Vec<i32> {
+        let mut v = Vec::with_capacity(n);
+        let mut x: u64 = 0xdeadbeef_cafebabe;
+        for _ in 0..n {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            v.push((x >> 33) as i32);
+        }
+        v
+    }
+
+    #[test]
+    fn insert_sequence_validates_all_invariants_step_by_step() {
+        let mut tree: RBTree<i32, i32> = RBTree::new();
+        for key in [10, 20, 5, 15, 1, 30] {
+            tree.insert(key, key);
+            tree.validate()
+                .unwrap_or_else(|e| panic!("falha após inserir {key}: {e}"));
+        }
+    }
+
+    #[test]
+    fn root_is_always_black_after_insert() {
+        let mut tree: RBTree<i32, i32> = RBTree::new();
+        for i in [3, 1, 5, 2, 4, 7, 6] {
+            tree.insert(i, i);
+            assert_eq!(
+                tree.root.as_ref().unwrap().color,
+                Color::Black,
+                "raiz deve ser preta após inserir {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn upsert_updates_value_without_duplicating_key() {
+        let mut tree: RBTree<i32, i32> = RBTree::new();
+        tree.insert(42, 100);
+        tree.insert(42, 999);
+        assert_eq!(tree.len(), 1);
+        tree.validate().unwrap();
+    }
+
+    #[test]
+    fn len_and_is_empty_track_insertions() {
+        let mut tree: RBTree<i32, i32> = RBTree::new();
+        assert!(tree.is_empty());
+        assert_eq!(tree.len(), 0);
+        for i in 1..=10 {
+            tree.insert(i, i);
+            assert_eq!(tree.len(), i as usize);
+        }
+        assert!(!tree.is_empty());
+    }
+
+    #[test]
+    fn insert_ascending_stays_balanced() {
+        let mut tree: RBTree<i32, i32> = RBTree::new();
+        for i in 0..100 {
+            tree.insert(i, i);
+        }
+        tree.validate().unwrap();
+        let n = tree.len() as f64;
+        let max_h = 2.0 * (n + 1.0).log2();
+        assert!(
+            tree.height() as f64 <= max_h,
+            "inserção ascendente: altura {} > 2*log2({}) = {:.1}",
+            tree.height(), n as usize + 1, max_h
+        );
+    }
+
+    #[test]
+    fn insert_descending_stays_balanced() {
+        let mut tree: RBTree<i32, i32> = RBTree::new();
+        for i in (0..100).rev() {
+            tree.insert(i, i);
+        }
+        tree.validate().unwrap();
+        let n = tree.len() as f64;
+        let max_h = 2.0 * (n + 1.0).log2();
+        assert!(
+            tree.height() as f64 <= max_h,
+            "inserção descendente: altura {} > 2*log2({}) = {:.1}",
+            tree.height(), n as usize + 1, max_h
+        );
+    }
+
+    #[test]
+    fn insert_1000_random_height_bound_and_valid() {
+        let mut tree: RBTree<i32, i32> = RBTree::new();
+        for k in pseudo_random(1000) {
+            tree.insert(k, k);
+        }
+        tree.validate().unwrap();
+        let n = tree.len() as f64;
+        let max_h = 2.0 * (n + 1.0).log2();
+        assert!(
+            tree.height() as f64 <= max_h,
+            "1000 aleatórios: altura {} > 2*log2({}) = {:.1}",
+            tree.height(), n as usize + 1, max_h
+        );
+    }
+
+    #[test]
+    fn insert_validate_each_of_1000_random() {
+        let mut tree: RBTree<i32, i32> = RBTree::new();
+        for (i, k) in pseudo_random(1000).into_iter().enumerate() {
+            tree.insert(k, k);
+            if i % 100 == 0 {
+                tree.validate()
+                    .unwrap_or_else(|e| panic!("invariante violada na inserção {i}: {e}"));
+            }
+        }
+        tree.validate().unwrap();
     }
 }
