@@ -203,8 +203,209 @@ impl<K: Ord, V> RBTree<K, V> {
         todo!()
     }
 
-    pub fn delete(&mut self, _key: &K) -> Option<V> {
-        todo!()
+    // ── Remoção com fixup (issue #8) ─────────────────────────────────────────
+
+    pub fn delete(&mut self, key: &K) -> Option<V> {
+        let (new_root, removed, _) = Self::delete_rec(self.root.take(), key);
+        self.root = new_root;
+        if let Some(ref mut r) = self.root {
+            r.color = Color::Black; // invariante 2: raiz sempre preta
+        }
+        if removed.is_some() {
+            self.len -= 1;
+        }
+        removed
+    }
+
+    /// Retorna (nova subárvore, valor removido, double_black).
+    /// `double_black = true` significa que a subárvore ficou com um nó preto a menos.
+    fn delete_rec(link: Link<K, V>, key: &K) -> (Link<K, V>, Option<V>, bool) {
+        match link {
+            None => (None, None, false),
+            Some(mut node) => match key.cmp(&node.key) {
+                Ordering::Less => {
+                    let (new_left, removed, db) = Self::delete_rec(node.left.take(), key);
+                    node.left = new_left;
+                    if removed.is_none() {
+                        return (Some(node), None, false);
+                    }
+                    if db {
+                        let (fixed, still_db) = Self::delete_fixup_left(node);
+                        (Some(fixed), removed, still_db)
+                    } else {
+                        (Some(node), removed, false)
+                    }
+                }
+                Ordering::Greater => {
+                    let (new_right, removed, db) = Self::delete_rec(node.right.take(), key);
+                    node.right = new_right;
+                    if removed.is_none() {
+                        return (Some(node), None, false);
+                    }
+                    if db {
+                        let (fixed, still_db) = Self::delete_fixup_right(node);
+                        (Some(fixed), removed, still_db)
+                    } else {
+                        (Some(node), removed, false)
+                    }
+                }
+                Ordering::Equal => Self::remove_node(node),
+            },
+        }
+    }
+
+    /// Trata os 3 casos BST de remoção:
+    /// - Folha: remove diretamente; preto gera double-black.
+    /// - 1 filho: substitui (o único filho possível é vermelho; absorve o preto extra).
+    /// - 2 filhos: substitui pelo sucessor in-order (mínimo da subárvore direita).
+    fn remove_node(mut node: Box<Node<K, V>>) -> (Link<K, V>, Option<V>, bool) {
+        match (node.left.is_some(), node.right.is_some()) {
+            (false, false) => {
+                let db = node.color == Color::Black;
+                let Node { value, .. } = *node;
+                (None, Some(value), db)
+            }
+            (true, false) => {
+                let mut child = node.left.take().unwrap();
+                // Nó com 1 filho: por invariante, node é preto e child é vermelho.
+                child.color = Color::Black;
+                let Node { value, .. } = *node;
+                (Some(child), Some(value), false)
+            }
+            (false, true) => {
+                let mut child = node.right.take().unwrap();
+                child.color = Color::Black;
+                let Node { value, .. } = *node;
+                (Some(child), Some(value), false)
+            }
+            (true, true) => {
+                // Substitui pela chave/valor do sucessor in-order; deleta o sucessor.
+                let (new_right, succ_key, succ_val, db) =
+                    Self::extract_min(node.right.take().unwrap());
+                let old_value = std::mem::replace(&mut node.value, succ_val);
+                let _ = std::mem::replace(&mut node.key, succ_key);
+                node.right = new_right;
+                if db {
+                    let (fixed, still_db) = Self::delete_fixup_right(node);
+                    (Some(fixed), Some(old_value), still_db)
+                } else {
+                    (Some(node), Some(old_value), false)
+                }
+            }
+        }
+    }
+
+    /// Remove e retorna o nó com a menor chave da subárvore.
+    /// Retorna (nova subárvore, chave, valor, double_black).
+    fn extract_min(mut node: Box<Node<K, V>>) -> (Link<K, V>, K, V, bool) {
+        if node.left.is_none() {
+            let is_black = node.color == Color::Black;
+            let right = node.right.take();
+            let Node { key, value, .. } = *node;
+            match right {
+                None => (None, key, value, is_black),
+                Some(mut child) => {
+                    child.color = Color::Black;
+                    (Some(child), key, value, false)
+                }
+            }
+        } else {
+            let (new_left, k, v, db) = Self::extract_min(node.left.take().unwrap());
+            node.left = new_left;
+            if db {
+                let (fixed, still_db) = Self::delete_fixup_left(node);
+                (Some(fixed), k, v, still_db)
+            } else {
+                (Some(node), k, v, false)
+            }
+        }
+    }
+
+    /// Corrige double-black na subárvore ESQUERDA de `p`.
+    /// Implementa os 4 casos CLRS do lado esquerdo (Casos 1-4).
+    fn delete_fixup_left(mut p: Box<Node<K, V>>) -> (Box<Node<K, V>>, bool) {
+        if is_red(&p.right) {
+            // Caso 1: irmão (direito) é vermelho.
+            // Rotaciona à esquerda em p; reduz ao Caso 2, 3 ou 4 com irmão preto.
+            p.color = Color::Red;
+            p.right.as_mut().unwrap().color = Color::Black;
+            let mut new_root = Self::rotate_left(p);
+            let (fixed, still_db) = Self::delete_fixup_left(new_root.left.take().unwrap());
+            new_root.left = Some(fixed);
+            return (new_root, still_db);
+        }
+
+        let s_near_red = p.right.as_ref().map_or(false, |s| is_red(&s.left));
+        let s_far_red = p.right.as_ref().map_or(false, |s| is_red(&s.right));
+
+        if !s_near_red && !s_far_red {
+            // Caso 2: irmão preto sem filhos vermelhos.
+            // Recolore irmão de preto para vermelho; propaga double-black para p.
+            p.right.as_mut().unwrap().color = Color::Red;
+            let p_was_black = p.color == Color::Black;
+            p.color = Color::Black;
+            return (p, p_was_black);
+        }
+
+        if !s_far_red {
+            // Caso 3: irmão preto, filho próximo (esquerdo do irmão) vermelho.
+            // Rotaciona à direita no irmão para converter em Caso 4.
+            let s = p.right.take().unwrap();
+            let s_color = s.color.clone();
+            let mut new_s = Self::rotate_right(s);
+            new_s.color = s_color;
+            new_s.right.as_mut().unwrap().color = Color::Red;
+            p.right = Some(new_s);
+        }
+
+        // Caso 4: irmão preto, filho distante (direito do irmão) vermelho.
+        // Rotaciona à esquerda em p; absorve o double-black.
+        let p_color = p.color.clone();
+        p.right.as_mut().unwrap().color = p_color;
+        p.right.as_mut().unwrap().right.as_mut().unwrap().color = Color::Black;
+        p.color = Color::Black;
+        (Self::rotate_left(p), false)
+    }
+
+    /// Simétrico a `delete_fixup_left`: corrige double-black na subárvore DIREITA de `p`.
+    fn delete_fixup_right(mut p: Box<Node<K, V>>) -> (Box<Node<K, V>>, bool) {
+        if is_red(&p.left) {
+            // Caso 1 simétrico: irmão (esquerdo) é vermelho.
+            p.color = Color::Red;
+            p.left.as_mut().unwrap().color = Color::Black;
+            let mut new_root = Self::rotate_right(p);
+            let (fixed, still_db) = Self::delete_fixup_right(new_root.right.take().unwrap());
+            new_root.right = Some(fixed);
+            return (new_root, still_db);
+        }
+
+        let s_near_red = p.left.as_ref().map_or(false, |s| is_red(&s.right));
+        let s_far_red = p.left.as_ref().map_or(false, |s| is_red(&s.left));
+
+        if !s_near_red && !s_far_red {
+            // Caso 2 simétrico
+            p.left.as_mut().unwrap().color = Color::Red;
+            let p_was_black = p.color == Color::Black;
+            p.color = Color::Black;
+            return (p, p_was_black);
+        }
+
+        if !s_far_red {
+            // Caso 3 simétrico: rotaciona à esquerda no irmão.
+            let s = p.left.take().unwrap();
+            let s_color = s.color.clone();
+            let mut new_s = Self::rotate_left(s);
+            new_s.color = s_color;
+            new_s.left.as_mut().unwrap().color = Color::Red;
+            p.left = Some(new_s);
+        }
+
+        // Caso 4 simétrico: rotaciona à direita em p.
+        let p_color = p.color.clone();
+        p.left.as_mut().unwrap().color = p_color;
+        p.left.as_mut().unwrap().left.as_mut().unwrap().color = Color::Black;
+        p.color = Color::Black;
+        (Self::rotate_right(p), false)
     }
 
     pub fn range(&self, _low: &K, _high: &K) -> Vec<(&K, &V)> {
@@ -302,14 +503,15 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn len_tracks_insertions_and_deletions() {
         let mut tree: RBTree<i32, i32> = RBTree::new();
         assert_eq!(tree.len(), 0);
         tree.insert(1, 10);
         tree.insert(2, 20);
         assert_eq!(tree.len(), 2);
-        tree.delete(&1);
+        assert_eq!(tree.delete(&1), Some(10));
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree.delete(&99), None);
         assert_eq!(tree.len(), 1);
     }
 }
@@ -531,5 +733,149 @@ mod insert_tests {
             }
         }
         tree.validate().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod delete_tests {
+    use super::RBTree;
+
+    fn pseudo_random(n: usize) -> Vec<i32> {
+        let mut v = Vec::with_capacity(n);
+        let mut x: u64 = 0xcafebabe_deadbeef;
+        for _ in 0..n {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            v.push((x >> 33) as i32);
+        }
+        v
+    }
+
+    #[test]
+    fn delete_nonexistent_returns_none() {
+        let mut tree: RBTree<i32, i32> = RBTree::new();
+        assert_eq!(tree.delete(&42), None);
+        tree.insert(1, 1);
+        assert_eq!(tree.delete(&99), None);
+        assert_eq!(tree.len(), 1);
+    }
+
+    #[test]
+    fn delete_returns_correct_value() {
+        let mut tree: RBTree<i32, i32> = RBTree::new();
+        tree.insert(10, 100);
+        tree.insert(20, 200);
+        tree.insert(5, 50);
+        assert_eq!(tree.delete(&10), Some(100));
+        assert_eq!(tree.delete(&10), None); // já removido
+        assert_eq!(tree.delete(&5), Some(50));
+        assert_eq!(tree.len(), 1);
+    }
+
+    #[test]
+    fn delete_single_node_empties_tree() {
+        let mut tree: RBTree<i32, i32> = RBTree::new();
+        tree.insert(42, 42);
+        assert_eq!(tree.delete(&42), Some(42));
+        assert!(tree.is_empty());
+        tree.validate().unwrap();
+    }
+
+    #[test]
+    fn delete_validates_invariants_after_each_removal() {
+        let mut tree: RBTree<i32, i32> = RBTree::new();
+        let keys: Vec<i32> = (1..=20).collect();
+        for &k in &keys {
+            tree.insert(k, k);
+        }
+        // Remove as primeiras 10 chaves uma a uma, validando após cada remoção
+        for &k in keys.iter().take(10) {
+            let removed = tree.delete(&k);
+            assert_eq!(removed, Some(k), "delete({k}) deveria retornar Some({k})");
+            tree.validate()
+                .unwrap_or_else(|e| panic!("invariante violada após remover {k}: {e}"));
+        }
+        assert_eq!(tree.len(), 10);
+    }
+
+    #[test]
+    fn delete_leaf_red_validates() {
+        // Remoção de folha vermelha (caso mais simples, sem double-black)
+        let mut tree: RBTree<i32, i32> = RBTree::new();
+        for k in [10, 5, 20, 3, 7] {
+            tree.insert(k, k);
+        }
+        tree.validate().unwrap();
+        tree.delete(&3); // folha vermelha
+        tree.validate().unwrap();
+        tree.delete(&7); // outra folha vermelha
+        tree.validate().unwrap();
+    }
+
+    #[test]
+    fn delete_root_repeatedly() {
+        // Deleta sempre a raiz (exerce o Caso 2 filhos com extração do sucessor)
+        let mut tree: RBTree<i32, i32> = RBTree::new();
+        let keys: Vec<i32> = (1..=15).collect();
+        for &k in &keys {
+            tree.insert(k, k);
+        }
+        for &k in &keys {
+            // Deleta a menor chave restante (in-order primeira)
+            assert!(tree.delete(&k).is_some());
+            if !tree.is_empty() {
+                tree.validate()
+                    .unwrap_or_else(|e| panic!("invariante violada após remover {k}: {e}"));
+            }
+        }
+        assert!(tree.is_empty());
+    }
+
+    #[test]
+    fn delete_500_insert_250_random_validates() {
+        let mut tree: RBTree<i32, i32> = RBTree::new();
+        let keys = pseudo_random(500);
+        for &k in &keys {
+            tree.insert(k, k);
+        }
+        // Remove as primeiras 250 chaves únicas inseridas
+        let mut removed = 0;
+        for &k in keys.iter().take(250) {
+            if tree.delete(&k).is_some() {
+                removed += 1;
+            }
+        }
+        tree.validate().unwrap();
+        assert!(removed > 0, "nenhuma chave removida");
+    }
+
+    #[test]
+    fn delete_all_elements_empties_tree() {
+        let mut tree: RBTree<i32, i32> = RBTree::new();
+        let n = 50;
+        for i in 0..n {
+            tree.insert(i, i);
+        }
+        for i in 0..n {
+            tree.delete(&i);
+        }
+        assert!(tree.is_empty());
+        assert_eq!(tree.len(), 0);
+        tree.validate().unwrap();
+    }
+
+    #[test]
+    fn delete_descending_order_validates() {
+        let mut tree: RBTree<i32, i32> = RBTree::new();
+        for i in 0..30 {
+            tree.insert(i, i);
+        }
+        for i in (0..30).rev() {
+            tree.delete(&i);
+            if !tree.is_empty() {
+                tree.validate()
+                    .unwrap_or_else(|e| panic!("invariante violada após remover {i}: {e}"));
+            }
+        }
+        assert!(tree.is_empty());
     }
 }
