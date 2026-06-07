@@ -1,6 +1,5 @@
-mod db;
-mod persistence;
-mod tree;
+use rbtree_db::db;
+use rbtree_db::persistence;
 
 use std::io::{self, Write};
 
