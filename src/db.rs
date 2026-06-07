@@ -1,18 +1,12 @@
-use std::collections::BTreeMap;
-
-// Para trocar pelo RBTree real, altere apenas esta linha (e os corpos dos
-// métodos abaixo que chamam a API do BTreeMap) — toda a lógica fica em db.rs.
-type Store = BTreeMap<String, String>;
+use crate::tree::rbtree::RBTree;
 
 pub struct Database {
-    store: Store,
+    store: RBTree<String, String>,
 }
 
 impl Database {
     pub fn new() -> Self {
-        Database {
-            store: BTreeMap::new(),
-        }
+        Database { store: RBTree::new() }
     }
 
     /// Insere ou atualiza o par chave-valor. Retorna "OK".
@@ -23,7 +17,7 @@ impl Database {
 
     /// Retorna o valor associado à chave, ou "(nil)" se ausente.
     pub fn get(&self, key: &str) -> String {
-        match self.store.get(key) {
+        match self.store.get(&key.to_owned()) {
             Some(v) => format!("\"{v}\""),
             None => "(nil)".to_string(),
         }
@@ -31,25 +25,23 @@ impl Database {
 
     /// Remove a chave e retorna "OK", ou "(nil)" se ela não existia.
     pub fn delete(&mut self, key: &str) -> String {
-        match self.store.remove(key) {
+        match self.store.delete(&key.to_owned()) {
             Some(_) => "OK".to_string(),
             None => "(nil)".to_string(),
         }
     }
 
     /// Retorna todos os pares com chave em [low, high], um por linha, em ordem crescente.
-    ///
-    /// Complexidade: O(log n + k), onde k = número de resultados.
-    /// Quando RBTree estiver pronta (issue #9), substitua o corpo por:
-    ///   self.store.range(low, high).map(...).collect()
-    /// usando o iterador in-order com poda de subárvores.
+    /// Complexidade: O(log n + k) via InOrderIterator com poda de subárvores (issue #9).
     pub fn range(&self, low: &str, high: &str) -> String {
         if low > high {
             return "(empty)".to_string();
         }
+        let low_s = low.to_owned();
+        let high_s = high.to_owned();
         let results: Vec<String> = self
             .store
-            .range(low.to_owned()..=high.to_owned())
+            .range(&low_s, &high_s)
             .map(|(k, v)| format!("{k} -> \"{v}\""))
             .collect();
         if results.is_empty() {
@@ -71,17 +63,17 @@ impl Database {
             .join("\n")
     }
 
-    /// Retorna o par com a menor chave, ou "(nil)" se o banco estiver vazio.
+    /// Retorna o par com a menor chave em O(log n), ou "(nil)" se o banco estiver vazio.
     pub fn min(&self) -> String {
-        match self.store.iter().next() {
+        match self.store.min() {
             Some((k, v)) => format!("{k} -> \"{v}\""),
             None => "(nil)".to_string(),
         }
     }
 
-    /// Retorna o par com a maior chave, ou "(nil)" se o banco estiver vazio.
+    /// Retorna o par com a maior chave em O(log n), ou "(nil)" se o banco estiver vazio.
     pub fn max(&self) -> String {
-        match self.store.iter().next_back() {
+        match self.store.max() {
             Some((k, v)) => format!("{k} -> \"{v}\""),
             None => "(nil)".to_string(),
         }
@@ -126,7 +118,7 @@ mod tests {
 
     fn populated() -> Database {
         let mut db = Database::new();
-        // Inserção fora de ordem intencional — verifica que BTreeMap/RBTree ordena.
+        // Inserção fora de ordem intencional — verifica que RBTree ordena.
         db.set("carlos".to_string(), "3".to_string());
         db.set("ana".to_string(), "1".to_string());
         db.set("bruno".to_string(), "2".to_string());
@@ -195,7 +187,6 @@ mod tests {
 
     #[test]
     fn range_exact_match_existing_key_returns_one_result() {
-        // RANGE z z — chave existe: deve retornar exatamente 1 par.
         let db = populated();
         let result = db.range("ana", "ana");
         let lines: Vec<&str> = result.lines().collect();
@@ -205,7 +196,6 @@ mod tests {
 
     #[test]
     fn range_exact_match_missing_key_returns_empty() {
-        // RANGE z z — chave não existe: deve retornar "(empty)".
         assert_eq!(populated().range("z", "z"), "(empty)");
     }
 

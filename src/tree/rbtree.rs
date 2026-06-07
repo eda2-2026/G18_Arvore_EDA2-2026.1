@@ -441,6 +441,10 @@ impl<K: Ord, V> RBTree<K, V> {
         Some((&curr.key, &curr.value))
     }
 
+    pub fn keys(&self) -> impl Iterator<Item = &K> {
+        self.iter().map(|(k, _)| k)
+    }
+
     pub fn len(&self) -> usize {
         self.len
     }
