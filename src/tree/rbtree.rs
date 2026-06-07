@@ -2,6 +2,7 @@
 
 use std::cmp::Ordering;
 
+use crate::tree::iterator::InOrderIterator;
 use crate::tree::node::{is_red, Color, Link, Node};
 
 pub struct RBTree<K: Ord, V> {
@@ -199,8 +200,16 @@ impl<K: Ord, V> RBTree<K, V> {
 
     // ── Interface pública (outras issues) ────────────────────────────────────
 
-    pub fn get(&self, _key: &K) -> Option<&V> {
-        todo!()
+    pub fn get(&self, key: &K) -> Option<&V> {
+        let mut curr = self.root.as_deref();
+        while let Some(node) = curr {
+            match key.cmp(&node.key) {
+                Ordering::Equal => return Some(&node.value),
+                Ordering::Less => curr = node.left.as_deref(),
+                Ordering::Greater => curr = node.right.as_deref(),
+            }
+        }
+        None
     }
 
     // ── Remoção com fixup (issue #8) ─────────────────────────────────────────
@@ -408,20 +417,28 @@ impl<K: Ord, V> RBTree<K, V> {
         (Self::rotate_right(p), false)
     }
 
-    pub fn range(&self, _low: &K, _high: &K) -> Vec<(&K, &V)> {
-        todo!()
+    pub fn range<'a>(&'a self, low: &'a K, high: &'a K) -> InOrderIterator<'a, K, V> {
+        InOrderIterator::new(&self.root, Some(low), Some(high))
     }
 
-    pub fn iter(&self) -> Vec<(&K, &V)> {
-        todo!()
+    pub fn iter(&self) -> InOrderIterator<'_, K, V> {
+        InOrderIterator::new(&self.root, None, None)
     }
 
     pub fn min(&self) -> Option<(&K, &V)> {
-        todo!()
+        let mut curr = self.root.as_deref()?;
+        while let Some(left) = curr.left.as_deref() {
+            curr = left;
+        }
+        Some((&curr.key, &curr.value))
     }
 
     pub fn max(&self) -> Option<(&K, &V)> {
-        todo!()
+        let mut curr = self.root.as_deref()?;
+        while let Some(right) = curr.right.as_deref() {
+            curr = right;
+        }
+        Some((&curr.key, &curr.value))
     }
 
     pub fn len(&self) -> usize {
@@ -439,9 +456,7 @@ impl<K: Ord, V> RBTree<K, V> {
 mod tests {
     use super::RBTree;
 
-    // Contrato das operações ainda não implementadas — panick em todo!().
     #[test]
-    #[should_panic]
     fn insert_and_get_roundtrip() {
         let mut tree: RBTree<String, String> = RBTree::new();
         tree.insert("nome".to_string(), "Gabriel".to_string());
@@ -449,7 +464,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn delete_returns_removed_value() {
         let mut tree: RBTree<String, String> = RBTree::new();
         tree.insert("k".to_string(), "v".to_string());
@@ -458,31 +472,30 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn range_returns_pairs_in_order() {
         let mut tree: RBTree<String, String> = RBTree::new();
         for (k, v) in [("c", "3"), ("a", "1"), ("b", "2"), ("d", "4")] {
             tree.insert(k.to_string(), v.to_string());
         }
-        let results = tree.range(&"a".to_string(), &"c".to_string());
+        let lo = "a".to_string();
+        let hi = "c".to_string();
+        let results: Vec<_> = tree.range(&lo, &hi).collect();
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].0, "a");
         assert_eq!(results[2].0, "c");
     }
 
     #[test]
-    #[should_panic]
     fn iter_preserves_sorted_order() {
         let mut tree: RBTree<i32, &str> = RBTree::new();
         for (k, v) in [(3, "c"), (1, "a"), (2, "b")] {
             tree.insert(k, v);
         }
-        let keys: Vec<i32> = tree.iter().iter().map(|(k, _)| **k).collect();
+        let keys: Vec<i32> = tree.iter().map(|(k, _)| *k).collect();
         assert_eq!(keys, vec![1, 2, 3]);
     }
 
     #[test]
-    #[should_panic]
     fn min_and_max_on_non_empty_tree() {
         let mut tree: RBTree<i32, &str> = RBTree::new();
         tree.insert(5, "e");
@@ -493,7 +506,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn empty_tree_invariants() {
         let tree: RBTree<i32, &str> = RBTree::new();
         assert!(tree.is_empty());
