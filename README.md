@@ -59,6 +59,45 @@ cargo run
 cargo test
 ```
 
+## Benchmarks
+
+Os benchmarks comparam RBTree, `BTreeMap` e `HashMap` da stdlib nas operações centrais do banco.
+
+```bash
+# Rodar todos os benchmarks (~3-5 min)
+cargo bench
+
+# Filtrar por grupo de benchmark
+cargo bench -- insert_random
+cargo bench -- range_1pct
+cargo bench -- min
+cargo bench -- get_hit
+
+# Salvar linha de base e comparar após uma mudança
+cargo bench -- --save-baseline v1
+# ... faz alterações no código ...
+cargo bench -- --baseline v1
+
+# Abrir relatório HTML com gráficos de distribuição
+xdg-open target/criterion/report/index.html   # Linux
+open target/criterion/report/index.html       # macOS
+```
+
+### Resultados de referência (n = 100 000, release build)
+
+| Operação | RBTree | BTreeMap | HashMap |
+|---|---|---|---|
+| `insert` | 31 ms | 8.8 ms | 2.3 ms |
+| `get` hit | 786 µs | 560 µs | **76 µs** |
+| `delete` | 1.3 ms | 680 µs | 128 µs |
+| `range` (1% do total) | 2.7 µs | **0.95 µs** | 450 µs (full scan) |
+| `min` / `max` | ~5 ns | ~2 ns | **~450 µs** (full scan) |
+| `iter` ordenado | 1.0 ms | 0.4 ms | 1.4 ms (+sort) |
+
+**Leitura rápida:** HashMap vence em ponto (`get/set/delete`) mas não suporta `range` nem `min/max` sem varrer tudo. RBTree e BTreeMap têm a mesma assíntota — BTreeMap é mais rápido na prática por armazenar múltiplas chaves por nó (melhor localidade de cache).
+
+Os benchmarks estão em [`benches/rbtree_bench.rs`](benches/rbtree_bench.rs).
+
 ## Exemplo de uso
 
 ```
@@ -80,16 +119,19 @@ rbtree-db> EXIT
 
 ```
 src/
-├── main.rs           # Ponto de entrada e loop principal
+├── main.rs           # Ponto de entrada e loop principal (REPL)
+├── lib.rs            # Re-exporta módulos para os benchmarks
 ├── db.rs             # Camada de banco: comandos e índice
 ├── persistence.rs    # Serialização para arquivo
 └── tree/
     ├── mod.rs        # Declaração dos submódulos
     ├── node.rs       # Nó com cor, chave, valor, filhos
-    ├── rbtree.rs     # Inserção, remoção, rotações
-    └── iterator.rs   # Percurso in-order para range queries
+    ├── rbtree.rs     # Inserção, remoção, rotações, fixups
+    └── iterator.rs   # InOrderIterator — percurso com poda de range
+benches/
+└── rbtree_bench.rs   # Benchmarks Criterion: insert/get/delete/range/min/iter
 data/
-└── dump.rdb          # Arquivo de persistência (gerado pelo SAVE)
+└── .gitkeep          # Mantém o diretório no repositório (dump.rdb é ignorado)
 ```
 
 ## Autores
