@@ -2,7 +2,10 @@
 
 Banco de dados de chave-valor com range queries, implementado em Rust sobre uma árvore Rubro-Negra.
 
-O diferencial em relação a uma hashtable (como o Redis usa por padrão) é o suporte a **range queries** em `O(log n + k)` — algo que hashtables não conseguem fazer, mas uma árvore balanceada faz naturalmente via percurso in-order com poda de subárvores.
+O diferencial em relação a uma hashtable (como o Redis usa por padrão) é o suporte a **range queries** em `O(log n + k)` — algo que hashtables não conseguem fazer, mas uma árvore balanceada faz naturalmente via percurso in-order com poda de subárvores. 
+
+## LINK DE APRESENTAÇÂO
+https://youtu.be/5e2n8vvuI5Q
 
 ## Contexto acadêmico
 
